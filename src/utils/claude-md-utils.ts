@@ -347,10 +347,8 @@ export async function updateFolderClaudeMdFiles(
 
     const formatted = formatTimelineForClaudeMd(result.content[0].text);
 
-    const claudeMdPath = path.join(folderPath, targetFilename);
     const hasNoActivity = formatted.includes('*No recent activity*');
     const isEmptyOrSkeleton = formatted.trim() === '' || hasNoActivity;
-    const fileExists = existsSync(claudeMdPath);
 
     // #2400 — when the generated content is empty/skeleton AND the folder
     // matches the user's deny-list, never inject (skip even if the file exists,
@@ -360,7 +358,13 @@ export async function updateFolderClaudeMdFiles(
       continue;
     }
 
-    if (hasNoActivity && !fileExists) {
+    // #2400 — never write an empty/skeleton context file. `formatted` is ''
+    // (not the '*No recent activity*' sentinel, which only the CLI path emits)
+    // whenever the folder has no parseable observations, so the guard must key
+    // off `isEmptyOrSkeleton`, not `hasNoActivity` (which is always false here).
+    // Skip unconditionally so we neither create new empty skeletons nor wipe a
+    // stale-but-existing file down to an empty wrapper.
+    if (isEmptyOrSkeleton) {
       logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
       continue;
     }
