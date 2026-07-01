@@ -318,10 +318,17 @@ export async function updateFolderClaudeMdFiles(
   });
 
   for (const folderPath of folderPaths) {
+    // Observations persist project-RELATIVE file paths (e.g. "app/b2r/modules/x.c"),
+    // so the by-file search must be queried with a path relative to the project
+    // root. Querying with the absolute folderPath makes the SQL `LIKE %path%`
+    // match never fire, returning zero results — which is why every folder
+    // produced empty/skeleton content and (after the #2400 fix) no file at all.
+    // folderPath stays absolute for the filesystem write below.
+    const queryPath = projectRoot ? path.relative(projectRoot, folderPath) : folderPath;
     let response: Response;
     try {
       response = await workerHttpRequest(
-        `/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+        `/api/search/by-file?filePath=${encodeURIComponent(queryPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);

@@ -76,8 +76,11 @@ export class HybridSearchStrategy {
     sessions: SessionSummarySearchResult[];
     usedChroma: boolean;
   }> {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy } = options;
-    const filterOptions = { limit, project, platformSource, dateRange, orderBy };
+    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, platformSource, dateRange, orderBy, isFolder } = options;
+    // Forward isFolder so SessionSearch applies the direct-child folder filter
+    // (and folder-sized query limit). Dropping it made folder queries behave as
+    // exact-file lookups under the hybrid strategy.
+    const filterOptions = { limit, project, platformSource, dateRange, orderBy, isFolder };
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
 

@@ -2,18 +2,24 @@
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
-// cmem-sdk: keep SessionStore + parseFileList off the SDK's import graph.
-// Both come from the SQLite layer (`bun:sqlite`). The SDK only uses the
-// constructor + ensureCollectionExists + close() surface of ChromaSync,
-// so a TYPE-ONLY import is sufficient — value-level uses (`new
-// SessionStore()` / parseFileList(...)) are loaded lazily inside the
-// SQLite-only methods that need them. Plan §3 anti-pattern: do NOT add
-// `bun:sqlite` to the SDK bundle externals — fix the import chain.
+// cmem-sdk: keep SessionStore off the SDK's import graph. It comes from the
+// SQLite layer (`bun:sqlite`). The SDK only uses the constructor +
+// ensureCollectionExists + close() surface of ChromaSync, so a TYPE-ONLY
+// import is sufficient — the value-level use (`new SessionStore()`) is loaded
+// lazily inside the SQLite-only backfill methods that need it. Plan §3
+// anti-pattern: do NOT add `bun:sqlite` to the SDK bundle externals — fix the
+// import chain.
 import type { SessionStore as SessionStoreType } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ChromaUnavailableError } from '../worker/search/errors.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import type * as SqliteFilesModule from '../sqlite/observations/files.js';
+// parseFileList is a pure JSON-array parser (imports only `logger`, no
+// `bun:sqlite`), so it is safe to import statically: it stays out of the SDK
+// bundle's forbidden-token set while being properly inlined into the esbuild
+// worker bundle. A lazy require() here is invisible to esbuild and resolves the
+// relative path against the bundle location at runtime (plugin/scripts/), which
+// does not exist — breaking every observation sync. See #2240 follow-up.
+import { parseFileList } from '../sqlite/observations/files.js';
 
 type SessionStore = SessionStoreType;
 type SessionStoreCtor = new () => SessionStoreType;
@@ -36,15 +42,6 @@ function loadSessionStoreCtor(): SessionStoreCtor {
     _sessionStoreCtor = m.SessionStore;
   }
   return _sessionStoreCtor;
-}
-
-let _filesHelper: typeof SqliteFilesModule | undefined;
-function loadFilesHelper(): typeof SqliteFilesModule {
-  if (!_filesHelper) {
-    const req = lazyCreateRequire();
-    _filesHelper = req('../sqlite/observations/files.js') as typeof SqliteFilesModule;
-  }
-  return _filesHelper;
 }
 
 // Exported for cmem-sdk Phase 6: the SDK builds ChromaDocument values from
@@ -152,12 +149,8 @@ export class ChromaSync {
 
     const facts = obs.facts ? JSON.parse(obs.facts) : [];
     const concepts = obs.concepts ? JSON.parse(obs.concepts) : [];
-    // parseFileList is SQLite-shaped (`bun:sqlite` in the import chain) —
-    // resolve it through the deferred loader so this method stays out of
-    // the SDK bundle's import graph. Plan §3.
-    const filesHelper = loadFilesHelper();
-    const files_read = filesHelper.parseFileList(obs.files_read);
-    const files_modified = filesHelper.parseFileList(obs.files_modified);
+    const files_read = parseFileList(obs.files_read);
+    const files_modified = parseFileList(obs.files_modified);
 
     const baseMetadata: Record<string, string | number | null> = {
       sqlite_id: obs.id,
@@ -625,8 +618,11 @@ export class ChromaSync {
 
     const watermarks = ChromaSyncState.get(backfillProject);
 
-    const SessionStoreCtor = loadSessionStoreCtor();
-    const db = storeOverride ?? new SessionStoreCtor();
+    // Only reach the lazy SessionStore require when no store is injected. The
+    // worker always passes one (its statically-bundled instance); invoking the
+    // require unconditionally would throw "Cannot find module" in the bundled
+    // worker, aborting backfill even though a valid store was supplied.
+    const db = storeOverride ?? new (loadSessionStoreCtor())();
 
     try {
       await this.runBackfillPipeline(db, backfillProject, watermarks);
@@ -1048,8 +1044,10 @@ export class ChromaSync {
     let db: SessionStore | undefined;
     let sync: ChromaSync | undefined;
     try {
-      const SessionStoreCtor = loadSessionStoreCtor();
-      db = storeOverride ?? new SessionStoreCtor();
+      // Only reach the lazy SessionStore require when no store is injected —
+      // see ensureBackfilled(). The worker passes its bundled instance, so the
+      // require (which fails to resolve in the bundled worker) is never hit.
+      db = storeOverride ?? new (loadSessionStoreCtor())();
       sync = new ChromaSync('claude-mem');
     } catch (error) {
       logger.error('CHROMA_SYNC', 'Failed to initialize backfill resources',
